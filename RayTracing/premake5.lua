@@ -19,7 +19,7 @@ project "RayTracing"
 
       "src",
       
-      "dependencies/EnTT/include"
+      "%{IncludeDir.EnTT}"
    }
 
    links

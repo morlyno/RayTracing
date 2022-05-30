@@ -10,6 +10,7 @@
 #include "Ray.h"
 #include "HitRecord.h"
 #include "Camera.h"
+#include "RayTracer.h"
 
 #include <entt/entt.hpp>
 
@@ -29,15 +30,17 @@ private:
 	void CreateRandomScene();
 	void AddSphere(const glm::vec3& pos, float radius, std::shared_ptr<Material> material);
 
-	bool HitGeometry(const Component::SphereComponent& sphere, const Ray& ray, float tMin, float tMax, HitRecord& hitRecord);
 	glm::vec4 RayColor(const Ray& ray, int bounces);
 	bool CastRay(const Ray& ray, float tMin, float tMax, HitRecord& out_HitRecord);
+	bool HitGeometry(const Component::SphereComponent& sphere, const Ray& ray, float tMin, float tMax, HitRecord& hitRecord);
 
 	void DenoiseImageData();
 
+	void PrintScene();
+
 private:
-	std::shared_ptr<Walnut::Image> m_Image;
-	uint32_t* m_ImageData = nullptr;
+	//std::shared_ptr<Walnut::Image> m_Image;
+	//uint32_t* m_ImageData = nullptr;
 	std::shared_ptr<Walnut::Image> m_DenoisedImage;
 	uint32_t* m_DenoisedImageData = nullptr;
 	uint32_t m_ViewportWidth = 0, m_ViewportHeight = 0;
@@ -45,11 +48,12 @@ private:
 	float m_LastRenderTime = 0.0f;
 	float m_LastDenoiseTime = 0.0f;
 
+	std::shared_ptr<RayTracer> m_RayTracer;
 	entt::registry m_Registry;
 	Camera m_Camera;
 
-	int m_Bounces = 8;
-	int m_Samples = 1;
+	int m_Bounces = 50;
+	int m_Samples = 8;
 
 	int m_HalfDenoiseWindowSize = 1;
 

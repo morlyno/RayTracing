@@ -2,7 +2,7 @@
 
 namespace utils {
 
-	uint32_t ConvertColorVec4ToUInt32(const glm::vec4& color)
+	static uint32_t ConvertColorVec4ToUInt32(const glm::vec4& color)
 	{
 		return
 			(uint8_t)(color.x * 255) <<  0 |
@@ -15,10 +15,17 @@ namespace utils {
 
 void RayTracingLayer::OnAttach()
 {
+	RayTracerSpecification specs;
+	specs.Width = m_ViewportWidth;
+	specs.Height = m_ViewportHeight;
+	specs.Samples = m_Samples;
+	specs.Bounces = m_Bounces;
+	m_RayTracer = std::make_shared<RayTracer>(specs);
 }
 
 void RayTracingLayer::OnDetach()
 {
+	delete[] m_DenoisedImageData;
 }
 
 void RayTracingLayer::OnUIRender()
@@ -27,37 +34,17 @@ void RayTracingLayer::OnUIRender()
 	ImGui::Text("Last render: %.3fms", m_LastRenderTime);
 	ImGui::Text("Last render: %.3fs", m_LastRenderTime / 1000.0f);
 	ImGui::Text("Last denoise: %.3fs", m_LastDenoiseTime);
-	if (ImGui::Button("Render"))
-	{
-		Render();
-	}
 
-	if (ImGui::Button("Denoise"))
-	{
-		DenoiseImageData();
-	}
+	if (ImGui::Button("Render"))               Render();
+	if (ImGui::Button("Denoise"))              DenoiseImageData();
+	if (ImGui::Button("Clear"))                Clear();
+	if (ImGui::Button("Create Scene"))         CreateScene();
+	if (ImGui::Button("Create Random Scene"))  CreateRandomScene();
 
-	if (ImGui::Button("Clear"))
-	{
-		Clear();
-	}
-
-	if (ImGui::Button("Create Scene"))
-	{
-		CreateScene();
-	}
-
-	if (ImGui::Button("Create Random Scene"))
-	{
-		CreateRandomScene();
-	}
-
-	ImGui::DragInt("Bounces", &m_Bounces, 1.0f, 1, INT_MAX, "%d", ImGuiSliderFlags_AlwaysClamp);
-	ImGui::DragInt("Sambles", &m_Samples, 1.0f, 1, 16, "%d", ImGuiSliderFlags_AlwaysClamp);
-	ImGui::Checkbox("Camera Jitter", &m_UseCameraJitter);
-	ImGui::Checkbox("Apply Denoise", &m_ApplyDenoise);
-	ImGui::DragInt("Denoise Window", &m_HalfDenoiseWindowSize, 1.0f, 1, INT_MAX);
-	ImGui::Checkbox("Show Denoised Image", &m_ShowDenoisedImage);
+	if (ImGui::DragInt("Bounces", &m_Bounces, 1.0f, 1, INT_MAX, "%d", ImGuiSliderFlags_AlwaysClamp)) m_RayTracer->SetBounces(m_Bounces);
+	if (ImGui::DragInt("Sambles", &m_Samples, 1.0f, 1, 16, "%d", ImGuiSliderFlags_AlwaysClamp)) m_RayTracer->SetSamples(m_Samples);
+	//ImGui::DragInt("Denoise Window", &m_HalfDenoiseWindowSize, 1.0f, 1, INT_MAX);
+	//ImGui::Checkbox("Show Denoised Image", &m_ShowDenoisedImage);
 
 	ImGui::End();
 
@@ -67,9 +54,8 @@ void RayTracingLayer::OnUIRender()
 	m_ViewportWidth = (uint32_t)ImGui::GetContentRegionAvail().x;
 	m_ViewportHeight = (uint32_t)ImGui::GetContentRegionAvail().y;
 
-	auto image = m_ShowDenoisedImage ? m_DenoisedImage : m_Image;
-	if (image)
-		ImGui::Image(image->GetDescriptorSet(), { (float)image->GetWidth(), (float)image->GetHeight() });
+	auto& image = m_RayTracer->GetFinalImage();
+	ImGui::Image(image->GetDescriptorSet(), { (float)image->GetWidth(), (float)image->GetHeight() });
 
 	ImGui::End();
 	ImGui::PopStyleVar();
@@ -79,7 +65,7 @@ void RayTracingLayer::Render()
 {
 	Walnut::Timer timer;
 
-	if (!m_Image || m_ViewportWidth != m_Image->GetWidth() || m_ViewportHeight != m_Image->GetHeight())
+	if (m_ViewportWidth != m_RayTracer->GetWidth() || m_ViewportHeight != m_RayTracer->GetHeight())
 	{
 		const float aspectRatio = (float)m_ViewportWidth / (float)m_ViewportHeight;
 		//const glm::vec3 origin = { 0.0f, 0.0f, 10.0f };
@@ -88,56 +74,15 @@ void RayTracingLayer::Render()
 		const glm::vec3 up = { 0.0f, 1.0f, 0.0f };
 		m_Camera.Set(origin, focusPoint, up, 20.0f, aspectRatio, 0.1f, 10.0f);
 
-		m_Image = std::make_shared<Walnut::Image>(m_ViewportWidth, m_ViewportHeight, Walnut::ImageFormat::RGBA);
-		delete[] m_ImageData;
-		m_ImageData = new uint32_t[m_ViewportWidth * m_ViewportHeight];
+		m_RayTracer->Resize(m_ViewportWidth, m_ViewportHeight);
 
 		m_DenoisedImage = std::make_shared<Walnut::Image>(m_ViewportWidth, m_ViewportHeight, Walnut::ImageFormat::RGBA);
 		delete[] m_DenoisedImageData;
 		m_DenoisedImageData = new uint32_t[m_ViewportWidth * m_ViewportHeight];
 	}
 
-	//Ray ray = Ray(glm::vec3(0.0f, 0.0f, -10.0f), glm::vec3(0.0f, 0.0f, 1.0f));
-	//HitRecord hr;
-	//CastRay(ray, 0.001f, FLT_MAX, hr);
-
-
-	for (uint32_t y = 0; y < m_ViewportHeight; y++)
-	{
-		for (uint32_t x = 0; x < m_ViewportWidth; x++)
-		{
-			if (m_Samples == 1)
-			{
-				const float u = (float)x / (m_ViewportWidth - 1);
-				const float v = 1.0f - ((float)y / (m_ViewportHeight - 1));
-
-				Ray ray = m_UseCameraJitter ? m_Camera.GetRayWithJitter(u, v) : m_Camera.GetRay(u, v);
-				glm::vec4 color = RayColor(ray, m_Bounces);
-
-				uint32_t index = x + m_ViewportWidth * y;
-				m_ImageData[index] = utils::ConvertColorVec4ToUInt32(color);
-				m_ImageData[index] |= 0xff000000;
-			}
-			else
-			{
-				glm::vec4 color = glm::vec4(0);
-				for (uint32_t i = 0; i < (uint32_t)m_Samples; i++)
-				{
-					const float u = ((float)x + Walnut::Random::Float(-1.0f, 1.0f)) / (m_ViewportWidth - 1);
-					const float v = 1.0f - (((float)y + Walnut::Random::Float(-1.0f, 1.0f)) / (m_ViewportHeight - 1));
-
-					Ray ray = m_UseCameraJitter ? m_Camera.GetRayWithJitter(u, v) : m_Camera.GetRay(u, v);
-					color += RayColor(ray, m_Bounces);
-				}
-
-				color /= (float)m_Samples;
-
-				uint32_t index = x + m_ViewportWidth * y;
-				m_ImageData[index] = utils::ConvertColorVec4ToUInt32(color);
-				m_ImageData[index] |= 0xff000000;
-			}
-		}
-	}
+	m_RayTracer->SetScene(m_Registry);
+	m_RayTracer->RenderScene(m_Camera);
 
 	if (m_ApplyDenoise)
 		DenoiseImageData();
@@ -147,40 +92,34 @@ void RayTracingLayer::Render()
 		m_DenoisedImage->SetData(m_DenoisedImageData);
 	}
 
-	//for (uint32_t i = 0; i < m_ViewportWidth * m_ViewportHeight; i++)
-	//{
-	//	m_ImageData[i] = Walnut::Random::UInt();
-	//	m_ImageData[i] |= 0xff000000;
-	//}
-
-	m_Image->SetData(m_ImageData);
-
 	m_LastRenderTime = timer.ElapsedMillis();
 }
 
 void RayTracingLayer::Clear()
 {
-	if (!m_Image || m_ViewportWidth != m_Image->GetWidth() || m_ViewportHeight != m_Image->GetHeight())
-	{
-		const float aspectRatio = (float)m_ViewportWidth / (float)m_ViewportHeight;
-		//const glm::vec3 origin = { 0.0f, 0.0f, 10.0f };
-		const glm::vec3 origin = { 13.0f, 2.0f, 3.0f };
-		const glm::vec3 focusPoint = { 0.0f, 0.0f, 0.0f };
-		const glm::vec3 up = { 0.0f, 1.0f, 0.0f };
-		m_Camera.Set(origin, focusPoint, up, 20.0f, aspectRatio, 0.1f, 10.0f);
+	return;
 
-		m_Image = std::make_shared<Walnut::Image>(m_ViewportWidth, m_ViewportHeight, Walnut::ImageFormat::RGBA);
-		m_DenoisedImage = std::make_shared<Walnut::Image>(m_ViewportWidth, m_ViewportHeight, Walnut::ImageFormat::RGBA);
-		delete[] m_ImageData;
-		m_ImageData = new uint32_t[m_ViewportWidth * m_ViewportHeight];
-		m_DenoisedImageData = new uint32_t[m_ViewportWidth * m_ViewportHeight];
-	}
-
-	memset(m_ImageData, 0, (uint64_t)m_ViewportWidth * m_ViewportHeight * sizeof(uint32_t));
-	memset(m_DenoisedImageData, 0, (uint64_t)m_ViewportWidth * m_ViewportHeight * sizeof(uint32_t));
-
-	m_Image->SetData(m_ImageData);
-	m_DenoisedImage->SetData(m_DenoisedImageData);
+	//if (!m_Image || m_ViewportWidth != m_Image->GetWidth() || m_ViewportHeight != m_Image->GetHeight())
+	//{
+	//	const float aspectRatio = (float)m_ViewportWidth / (float)m_ViewportHeight;
+	//	//const glm::vec3 origin = { 0.0f, 0.0f, 10.0f };
+	//	const glm::vec3 origin = { 13.0f, 2.0f, 3.0f };
+	//	const glm::vec3 focusPoint = { 0.0f, 0.0f, 0.0f };
+	//	const glm::vec3 up = { 0.0f, 1.0f, 0.0f };
+	//	m_Camera.Set(origin, focusPoint, up, 20.0f, aspectRatio, 0.1f, 10.0f);
+	//
+	//	m_Image = std::make_shared<Walnut::Image>(m_ViewportWidth, m_ViewportHeight, Walnut::ImageFormat::RGBA);
+	//	m_DenoisedImage = std::make_shared<Walnut::Image>(m_ViewportWidth, m_ViewportHeight, Walnut::ImageFormat::RGBA);
+	//	delete[] m_ImageData;
+	//	m_ImageData = new uint32_t[m_ViewportWidth * m_ViewportHeight];
+	//	m_DenoisedImageData = new uint32_t[m_ViewportWidth * m_ViewportHeight];
+	//}
+	//
+	//memset(m_ImageData, 0, (uint64_t)m_ViewportWidth * m_ViewportHeight * sizeof(uint32_t));
+	//memset(m_DenoisedImageData, 0, (uint64_t)m_ViewportWidth * m_ViewportHeight * sizeof(uint32_t));
+	//
+	//m_Image->SetData(m_ImageData);
+	//m_DenoisedImage->SetData(m_DenoisedImageData);
 }
 
 void RayTracingLayer::CreateScene()
@@ -267,34 +206,6 @@ void RayTracingLayer::AddSphere(const glm::vec3& pos, float radius, std::shared_
 	m_Registry.emplace<Component::MaterialComponent>(entity, material);
 }
 
-bool RayTracingLayer::HitGeometry(const Component::SphereComponent& sphere, const Ray& ray, float tMin, float tMax, HitRecord& hitRecord)
-{
-	glm::vec3 oc = ray.Origin - sphere.Center;
-	float a = glm::dot(ray.Direction, ray.Direction);
-	float bHalf = glm::dot(oc, ray.Direction);
-	float c = glm::dot(oc, oc) - sphere.Radius * sphere.Radius;
-	float discriminat = bHalf * bHalf - a * c;
-
-	if (discriminat < 0.0f)
-		return false;
-
-	float d = glm::sqrt(discriminat);
-	float r = (-bHalf - d) / a;
-	if (r < tMin || r > tMax)
-	{
-		r = (-bHalf + d) / a;
-		if (r < tMin || r > tMax)
-			return false;
-	}
-
-	hitRecord.Point = ray.HitPoint(r);
-	hitRecord.SetFaceNormal(ray, (hitRecord.Point - sphere.Center) / sphere.Radius);
-	hitRecord.T = r;
-	hitRecord.Material = nullptr;
-
-	return true;
-}
-
 glm::vec4 RayTracingLayer::RayColor(const Ray& ray, int bounces)
 {
 	if (bounces <= 0)
@@ -342,43 +253,76 @@ bool RayTracingLayer::CastRay(const Ray& ray, float tMin, float tMax, HitRecord&
 	return hit;
 }
 
+bool RayTracingLayer::HitGeometry(const Component::SphereComponent& sphere, const Ray& ray, float tMin, float tMax, HitRecord& hitRecord)
+{
+	glm::vec3 oc = ray.Origin - sphere.Center;
+	float a = glm::dot(ray.Direction, ray.Direction);
+	float bHalf = glm::dot(oc, ray.Direction);
+	float c = glm::dot(oc, oc) - sphere.Radius * sphere.Radius;
+	float discriminat = bHalf * bHalf - a * c;
+
+	if (discriminat < 0.0f)
+		return false;
+
+	float d = glm::sqrt(discriminat);
+	float r = (-bHalf - d) / a;
+	if (r < tMin || r > tMax)
+	{
+		r = (-bHalf + d) / a;
+		if (r < tMin || r > tMax)
+			return false;
+	}
+
+	hitRecord.Point = ray.HitPoint(r);
+	hitRecord.SetFaceNormal(ray, (hitRecord.Point - sphere.Center) / sphere.Radius);
+	hitRecord.T = r;
+	hitRecord.Material = nullptr;
+
+	return true;
+}
+
 void RayTracingLayer::DenoiseImageData()
 {
 	Walnut::Timer timer;
 
-	const auto indexData = [this](int x, int y) -> uint32_t
-	{
-		if (x < 0 || y < 0 || x >= (int)m_ViewportWidth || y >= (int)m_ViewportHeight)
-			return 0;
-
-		return m_ImageData[y * m_ViewportWidth + x];
-	};
-
-	const int halfWindowSize = m_HalfDenoiseWindowSize;
-	const int windowSize = 2 * halfWindowSize + 1;
-
-	std::vector<uint32_t> window(windowSize * windowSize);
-
-	for (int y = 0; y < m_ViewportHeight; y++)
-	{
-		for (int x = 0; x < m_ViewportWidth; x++)
-		{
-			uint32_t index = 0;
-			for (int wy = -halfWindowSize; wy <= halfWindowSize; wy++)
-			{
-				for (int wx = -halfWindowSize; wx <= halfWindowSize; wx++)
-				{
-					window[index++] = indexData(x + wx, y + wy);
-				}
-			}
-
-			std::sort(window.begin(), window.end());
-
-			m_DenoisedImageData[y * m_ViewportWidth + x] = window[(windowSize * windowSize) / 2];
-		}
-	}
-
-	m_DenoisedImage->SetData(m_DenoisedImageData);
+	//const auto indexData = [this](int x, int y) -> uint32_t
+	//{
+	//	if (x < 0 || y < 0 || x >= (int)m_ViewportWidth || y >= (int)m_ViewportHeight)
+	//		return 0;
+	//
+	//	return m_ImageData[y * m_ViewportWidth + x];
+	//};
+	//
+	//const int halfWindowSize = m_HalfDenoiseWindowSize;
+	//const int windowSize = 2 * halfWindowSize + 1;
+	//
+	//std::vector<uint32_t> window(windowSize * windowSize);
+	//
+	//for (int y = 0; y < m_ViewportHeight; y++)
+	//{
+	//	for (int x = 0; x < m_ViewportWidth; x++)
+	//	{
+	//		uint32_t index = 0;
+	//		for (int wy = -halfWindowSize; wy <= halfWindowSize; wy++)
+	//		{
+	//			for (int wx = -halfWindowSize; wx <= halfWindowSize; wx++)
+	//			{
+	//				window[index++] = indexData(x + wx, y + wy);
+	//			}
+	//		}
+	//
+	//		std::sort(window.begin(), window.end());
+	//
+	//		m_DenoisedImageData[y * m_ViewportWidth + x] = window[(windowSize * windowSize) / 2];
+	//	}
+	//}
+	//
+	//m_DenoisedImage->SetData(m_DenoisedImageData);
 
 	m_LastDenoiseTime = timer.ElapsedMillis();
+}
+
+void RayTracingLayer::PrintScene()
+{
+
 }

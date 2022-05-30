@@ -7,4 +7,6 @@ workspace "RayTracing"
 outputdir = "%{cfg.buildcfg}-%{cfg.system}-%{cfg.architecture}"
 include "Walnut/WalnutExternal.lua"
 
+IncludeDir["EnTT"] = "%{wks.location}/RayTracing/dependencies/EnTT/include";
+
 include "RayTracing"

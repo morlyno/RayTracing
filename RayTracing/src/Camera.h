@@ -13,8 +13,9 @@ public:
 
 	void Set(const glm::vec3& lookFrom, const glm::vec3& lookAt, const glm::vec3& up, float fov, float aspectRatio, float aperture, float focusDistance);
 
+	Ray GetRay(const glm::vec2& uv, bool distortion) const { return distortion ? GetRayWithDistortion(uv.x, uv.y) : GetRay(uv.x, uv.y); }
 	Ray GetRay(float u, float v) const;
-	Ray GetRayWithJitter(float u, float v) const;
+	Ray GetRayWithDistortion(float u, float v) const;
 
 private:
 	glm::vec3 m_Origin;

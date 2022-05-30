@@ -50,7 +50,7 @@ Ray Camera::GetRay(float u, float v) const
 	);
 }
 
-Ray Camera::GetRayWithJitter(float u, float v) const
+Ray Camera::GetRayWithDistortion(float u, float v) const
 {
 	glm::vec3 randomVec3 = Walnut::Random::InUnitSphere() * Walnut::Random::Float();
 	randomVec3.z = 0.0f;
